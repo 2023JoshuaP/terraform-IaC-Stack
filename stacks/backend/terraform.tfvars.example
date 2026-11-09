@@ -1,0 +1,2 @@
+# Cambiar a true solo si apruebas borrar repositorios que contengan imágenes.
+force_delete = false
