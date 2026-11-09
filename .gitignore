@@ -1,0 +1,39 @@
+# Terraform: dependencias, estado, planes y valores locales.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+!terraform.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.tfstate.lock.info
+
+# Credenciales y secretos locales.
+.env
+.env.*
+!.env.example
+.aws/
+*.pem
+*.key
+kubeconfig
+kubeconfig.*
+secret.yaml
+secrets.yaml
+
+# Se versiona .terraform.lock.hcl cuando terraform init lo genere.
+.rendered/
+.deployment/
+__pycache__/
+.venv/
+
+# Resultados locales: revisar y exportar evidencias antes de publicarlas.
+/evidence/
+/docs/
+/build/
+*.pyc

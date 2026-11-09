@@ -1,0 +1,7 @@
+# Copiar como common.tfvars. Todos los stacks deben usar los mismos valores.
+name       = "cloud-integrador-lab"
+aws_region = "us-east-1"
+tags = {
+  Project     = "cloud-integrador"
+  Environment = "lab"
+}
