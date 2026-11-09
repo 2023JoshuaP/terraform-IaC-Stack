@@ -1,0 +1,14 @@
+# Copiar outputs de network después de aprovisionarlo; no adivinar los IDs.
+vpc_id                   = "vpc-REEMPLAZAR"
+subnet_ids               = ["subnet-REEMPLAZAR-A", "subnet-REEMPLAZAR-B"]
+source_security_group_id = "sg-REEMPLAZAR"
+
+instance_class   = "db.t3.micro"
+engine_version   = null
+db_name          = "proceedhub"
+username         = "hubadmin"
+allocated_storage = 20
+deletion_protection       = true
+skip_final_snapshot       = false
+final_snapshot_identifier = "cloud-integrador-lab-final-01"
+# Contraseña fuera de este archivo: export TF_VAR_password=...
