@@ -1,0 +1,16 @@
+# Configuración específica de network. Reemplazar IPs de ejemplo.
+eks_public_access_cidrs = ["203.0.113.10/32"]
+app_access_cidrs        = ["203.0.113.10/32"]
+vpc_cidr               = "10.42.0.0/16"
+availability_zones     = ["us-east-1a", "us-east-1b"]
+kubernetes_version     = "1.35"
+node_instance_types    = ["t3.medium"]
+node_scaling           = { min = 1, desired = 2, max = 3 }
+
+create_iam_roles          = true
+existing_cluster_role_arn = null
+existing_node_role_arn    = null
+existing_alb_role_arn     = null
+cluster_admin_principal_arns = []
+enable_container_insights = false
+log_retention_days = 7
