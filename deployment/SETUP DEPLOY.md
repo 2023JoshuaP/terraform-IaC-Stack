@@ -217,30 +217,4 @@ terraform -chdir=stacks/network apply -var-file=../../config/common.tfvars
 ```
 
 Cerrar AWS o apagar el equipo no garantiza detener costos. Conservar los estados
-y seguir el orden de limpieza al terminar.
-
-## Limpieza (orden obligatorio)
-
-1. Eliminar el Ingress con el controlador ALB todavía operativo:
-
-   ```bash
-   kubectl --context cloud-integrador-lab -n cloud-integrador \
-     delete ingress cloud-integrador --wait=true --timeout=600s
-   ```
-
-2. Confirmar en AWS que se eliminaron el ALB y sus target groups; después eliminar
-   los namespaces `cloud-integrador` y `cloud-build`.
-3. Desactivar `deletion_protection` en los inputs de database y aplicar el cambio.
-   Decidir si conservar el snapshot final (genera costos) o autorizar omitirlo.
-4. Destruir primero database y después network, revisando cada plan:
-
-   ```bash
-   terraform -chdir=stacks/database destroy -var-file=../../config/common.tfvars
-   terraform -chdir=stacks/network destroy -var-file=../../config/common.tfvars
-   ```
-
-5. Si se autoriza eliminar las imágenes ECR, configurar `force_delete=true` en los
-   inputs de frontend/backend, aplicar el cambio y destruir ambos stacks con
-   `-var-file=../../config/common.tfvars`.
-6. Revisar snapshots, logs, ALB, ENI y otros recursos retenidos en AWS. No borrar
-   estados antes de destruir, quitar finalizers manualmente ni eliminar roles del Lab.
+y seguir [el orden de limpieza](README.md#limpieza-orden-obligatorio) al terminar.
