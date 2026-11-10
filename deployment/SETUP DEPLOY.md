@@ -1,187 +1,246 @@
-# Piloto completamente ejecutado en AWS
+# Despliegue desde cero en AWS Academy
 
-Guía paso a paso para compartir: [despliegue desde cero en otra cuenta](INICIO_OTRA_CUENTA.md).
+Requisitos: AWS CLI v2, Terraform >= 1.16 y < 2 (usamos 1.16.2), kubectl compatible
+con Kubernetes 1.35, Helm 3, Python >= 3.12 y Git. Activar el Lab y configurar sus
+credenciales vigentes antes de comenzar.
 
-## Qué ocurre
+Usar una copia limpia, sin estados, secretos ni configuración de otra cuenta.
+Los comandos asumen región `us-east-1` y nombre `cloud-integrador-lab`.
+Ejecutar por etapas y detenerse ante errores. Los recursos generan costos.
 
-1. Terraform crea ECR, EKS y RDS en los cuatro stacks independientes.
-2. Jobs temporales en EKS descargan commits concretos de los repositorios públicos.
-3. BuildKit construye las imágenes, ejecutando pruebas durante el build, y las sube a ECR.
-4. Los pods de aplicación se ejecutan en EKS, conectados a PostgreSQL privado en RDS.
-5. Un Ingress crea un ALB público limitado a los CIDR configurados en network.
-
-No se necesita ejecutar Docker ni Java en el equipo local. AWS CLI, kubectl,
-Terraform, Python y Helm solo envían instrucciones de administración.
-
-## Excepción de seguridad del Learner Lab
-
-El Lab no permite crear roles IAM normales. El piloto usa el rol EKS de clúster
-preexistente y `LabRole` preexistente para los nodos. Se verificaron confianza EC2,
-permisos EKS, ECR y balanceadores; no se modificaron esos roles.
-
-El controlador ALB y los Jobs usan `hostNetwork` y credenciales de IMDS del nodo.
-Los builds son privilegiados y `LabRole` tiene permisos amplios. **Solo para un
-laboratorio aislado con código confiable.** En producción usar roles por ServiceAccount,
-IRSA/Pod Identity, builders aislados y permisos mínimos. No hay credenciales del
-usuario dentro de los manifiestos ni publicadas en Git.
-
-## Preparación dinámica por cuenta (AWS Academy)
-
-Desde la raíz, con credenciales vigentes, ejecutar primero solo el diagnóstico:
+## 1. Descargar el proyecto
 
 ```bash
+git clone https://github.com/2023JoshuaP/terraform-IaC-Stack.git
+cd terraform-IaC-Stack
+```
+
+## Alternativa: ejecutar el despliegue completo
+
+Después de clonar, con requisitos instalados y credenciales vigentes, obtener los
+roles mediante el diagnóstico del paso 2. Luego ejecutar, sustituyendo los nombres:
+
+```bash
+python3 deployment/deploy-all.py \
+  --region us-east-1 \
+  --cluster-role NOMBRE_REAL_ROL_CLUSTER \
+  --node-role NOMBRE_REAL_ROL_NODOS
+```
+
+Esta alternativa ejecuta los pasos siguientes; **no ejecutarlos también en paralelo**.
+Solicita confirmación inicial y por cada plan. Agregar `--yes` solo para autorizar
+creación y aplicación sin preguntas. Siempre rechaza eliminaciones/reemplazos.
+
+Espera a Terraform (incluidos EKS y RDS), nodos Ready, componentes Helm, builds
+secuenciales y respuestas HTTP del ALB antes del smoke test. La espera adicional
+para nodos/HTTP es de 900 segundos; ajustar con `--ready-timeout 1800` si es necesario.
+Terraform conserva sus propios límites de creación: no se cancela EKS a los 900 segundos.
+
+Ante errores se detiene sin destruir lo creado. Tras corregir la causa, repetir el
+comando con los mismos estados y secretos. Reutiliza imágenes ya publicadas y espera
+Jobs existentes; si un Job falló o ya no existe sin haber publicado imagen, revisar
+los logs y usar `--rebuild` para nuevos intentos. No recupera automáticamente inputs
+RDS de redes destruidas ni credenciales expiradas. Si faltan permisos o hay ambigüedad
+en roles se detiene. No instala herramientas, no clona y no cambia políticas IAM.
+
+Planes (sensibles), metadata y resultado quedan en `.deployment/deploy-all-*/`.
+No ejecutar sobre otra cuenta con estados de este despliegue ni desde varias máquinas
+al mismo tiempo. El bloqueo del script protege solo esta copia local.
+
+## 2. Confirmar cuenta y diagnosticar roles
+
+```bash
+aws sts get-caller-identity
 python3 deployment/prepare-environment.py --region us-east-1
 ```
 
-Detecta cuenta, IP, roles con confianza EKS/EC2 y simula grupos básicos de permisos
-de arranque, lectura/publicación ECR y controlador ALB. No crea recursos ni cambia
-IAM. `allowed` significa únicamente que esas acciones pasaron la simulación;
-**no es una auditoría completa**. No garantiza condiciones de confianza, permisos
-de todas las API, SCP, cuotas ni disponibilidad. `denied` impide seleccionar el rol;
-`unknown` significa que faltó contexto o acceso a la simulación, no que tenga permiso.
+## 3. Preparar configuración
 
-Si existe exactamente un candidato comprobado por función, preparar los inputs:
+Reemplazar los nombres por roles de **su cuenta** que pasaron el diagnóstico.
+En nuestro despliegue elegimos el rol específico `…LabEksClusterRole…` para el
+clúster y `LabRole` para nodos. No elegir roles `denied`; si aparecen `unknown`,
+revisar permisos antes de continuar. La simulación es parcial, no una garantía.
 
 ```bash
-python3 deployment/prepare-environment.py --region us-east-1 --write
+python3 deployment/prepare-environment.py \
+  --region us-east-1 \
+  --cluster-role NOMBRE_REAL_ROL_CLUSTER \
+  --node-role NOMBRE_REAL_ROL_NODOS \
+  --write
 ```
 
-Si hay varios, elegir explícitamente los nombres/ARN mostrados:
+## 4. Crear ECR backend
 
 ```bash
-python3 deployment/prepare-environment.py --region us-east-1 \
-  --cluster-role NOMBRE_ROL_CLUSTER --node-role NOMBRE_ROL_NODOS --write
+terraform -chdir=stacks/backend init
+terraform -chdir=stacks/backend validate
+terraform -chdir=stacks/backend plan -var-file=../../config/common.tfvars
+terraform -chdir=stacks/backend apply -var-file=../../config/common.tfvars
 ```
 
-Si Academy impide simular, revisar los permisos con el administrador. Solo después
-de esa revisión se puede aceptar la incertidumbre con `--allow-unverified`, eligiendo
-explícitamente cada rol no verificado. Esto **no concede permisos ni evita bloqueos**.
-
-Al escribir, genera las plantillas locales faltantes, configura roles existentes,
-región, dos zonas disponibles para una red nueva y ambos accesos `/32`. Preserva otros
-valores y respalda archivos previos en `.deployment/environment-*/`. No aplica
-Terraform; revisar siempre el plan. Bloquea estados con ARN de otra cuenta y cambios
-de roles/región de network desplegado; estas comprobaciones no sustituyen una revisión
-del estado. Para otra cuenta usar una copia de trabajo independiente **sin copiar
-estados, secretos ni inputs privados**. Nunca borrar estados de recursos activos.
-
-No genera los inputs de RDS antes de tener red: luego usar `prepare-database.py`.
-Si quedan inputs de una red destruida, ese script se detendrá para revisión.
-El preparador no reconstruye aplicaciones ni configura credenciales automáticamente.
-
-## Actualizar la IP pública autorizada
-
-Si cambia la conexión del operador, detectar la IPv4 pública mediante el servicio
-HTTPS de AWS y actualizar los dos CIDR en `stacks/network/terraform.tfvars`:
+## 5. Crear ECR frontend
 
 ```bash
-python3 deployment/update-access-ip.py --check
+terraform -chdir=stacks/frontend init
+terraform -chdir=stacks/frontend validate
+terraform -chdir=stacks/frontend plan -var-file=../../config/common.tfvars
+terraform -chdir=stacks/frontend apply -var-file=../../config/common.tfvars
+```
+
+## 6. Crear red y EKS
+
+```bash
+terraform -chdir=stacks/network init
+terraform -chdir=stacks/network validate
+terraform -chdir=stacks/network plan -var-file=../../config/common.tfvars
+terraform -chdir=stacks/network apply -var-file=../../config/common.tfvars
+```
+
+En cada `apply`, revisar el plan antes de confirmar con `yes`. Desde cero se
+observaron 2 creaciones en backend, 2 en frontend y 22 en network, sin eliminaciones.
+Mantener el Lab activo y esperar `Apply complete!` antes de continuar.
+
+## 7. Conectar Kubernetes
+
+```bash
+aws eks update-kubeconfig \
+  --region us-east-1 \
+  --name cloud-integrador-lab \
+  --alias cloud-integrador-lab
+
+kubectl --context cloud-integrador-lab get nodes
+```
+
+Continuar cuando los dos nodos estén `Ready`.
+
+## 8. Crear RDS
+
+```bash
+python3 deployment/prepare-database.py
+terraform -chdir=stacks/database init
+terraform -chdir=stacks/database validate
+terraform -chdir=stacks/database plan -var-file=../../config/common.tfvars
+terraform -chdir=stacks/database apply -var-file=../../config/common.tfvars
+```
+
+Esperado desde cero: 5 creaciones, sin eliminaciones. No compartir los secretos
+generados. Si el preparador informa inputs anteriores diferentes, detenerse y revisar.
+
+## 9. Instalar ALB Controller y Metrics Server
+
+```bash
+bash deployment/install-platform.sh
+
+kubectl --context cloud-integrador-lab -n kube-system \
+  get deployments aws-load-balancer-controller metrics-server
+```
+
+Ambos deben mostrar `READY 1/1`.
+
+## 10. Construir imágenes en AWS
+
+```bash
+python3 deployment/cloud-build.py backend
+python3 deployment/wait-build.py backend
+```
+
+Solo cuando backend termine correctamente:
+
+```bash
+python3 deployment/cloud-build.py frontend
+python3 deployment/wait-build.py frontend
+```
+
+Para observar los Jobs:
+
+```bash
+kubectl --context cloud-integrador-lab -n cloud-build get jobs,pods
+```
+
+Ambos Jobs deben terminar `Complete 1/1`. No desplegar si un build falla.
+
+## 11. Desplegar aplicaciones
+
+```bash
+python3 deployment/deploy-apps.py --origin http://localhost
+
+kubectl --context cloud-integrador-lab -n cloud-integrador \
+  rollout status deployment/backend --timeout=600s
+
+kubectl --context cloud-integrador-lab -n cloud-integrador \
+  rollout status deployment/frontend --timeout=300s
+
+kubectl --context cloud-integrador-lab -n cloud-integrador get ingress
+```
+
+## 12. Configurar el origen real y obtener el enlace
+
+Esperar el hostname del ALB y ejecutar en la misma terminal:
+
+```bash
+kubectl --context cloud-integrador-lab -n cloud-integrador \
+  wait --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' \
+  ingress/cloud-integrador --timeout=600s
+
+ALB_HOST="$(kubectl --context cloud-integrador-lab -n cloud-integrador \
+  get ingress cloud-integrador \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+
+python3 deployment/deploy-apps.py --origin "http://$ALB_HOST"
+
+kubectl --context cloud-integrador-lab -n cloud-integrador \
+  rollout status deployment/backend --timeout=600s
+
+echo "http://$ALB_HOST"
+```
+
+Abrir el enlace mostrado. Usar solo datos ficticios: el piloto usa HTTP y restringe
+el acceso a la IP detectada. No reutilizar enlaces de otros despliegues.
+
+## 13. Verificar
+
+```bash
+kubectl --context cloud-integrador-lab -n cloud-integrador get pods,hpa,ingress
+kubectl --context cloud-integrador-lab -n cloud-integrador top pods
+python3 deployment/smoke-test.py "http://$ALB_HOST"
+```
+
+El smoke test crea un usuario sintético y comprueba página, becas, registro,
+login, sesión y logout. En navegador, comprobar también inicio de sesión y perfil.
+
+## Si cambia la IP pública
+
+```bash
 python3 deployment/update-access-ip.py
 terraform -chdir=stacks/network plan -var-file=../../config/common.tfvars
 terraform -chdir=stacks/network apply -var-file=../../config/common.tfvars
 ```
 
-El script solo modifica el archivo local; no requiere credenciales AWS ni aplica
-Terraform. Conserva los otros valores y sustituye **ambas listas completas** por
-la IP actual `/32`; no usar sin revisar si hay varios operadores autorizados.
-Necesita las dos asignaciones en una línea y se detiene ante formatos no previstos.
-La IP detectada es la salida pública del equipo (o de su VPN/proxy), no la del ALB.
-Ejecutarlo con la conexión desde la que se administrará EKS y se abrirá la página.
-
-## Ejecución manual después de aplicar network
-
-Todos los comandos parten desde `cloud-integrador/`. No lanzar construcciones simultáneas
-en el node group pequeño; esperar la terminación de cada Job.
-
-```bash
-aws eks update-kubeconfig --region us-east-1 --name cloud-integrador-lab --alias cloud-integrador-lab
-kubectl --context cloud-integrador-lab get nodes
-
-python3 deployment/prepare-database.py
-terraform -chdir=stacks/database plan -var-file=../../config/common.tfvars
-# Revisar antes de crear RDS:
-terraform -chdir=stacks/database apply -var-file=../../config/common.tfvars
-
-bash deployment/install-platform.sh
-python3 deployment/cloud-build.py backend
-```
-
-Si Helm no está en PATH, se puede especificar una ruta mediante `HELM=/ruta/helm`.
-El script cloud-build imprime el nombre del Job y el comando de logs. Comprobar que
-terminó exitosamente antes de continuar con frontend:
-
-```bash
-kubectl --context cloud-integrador-lab -n cloud-build get jobs,pods
-python3 deployment/cloud-build.py frontend
-```
-
-Los registros no sensibles de imagen/commit/Job quedan en `.deployment/*-build.json`.
-Los tokens ECR se obtienen dentro de AWS, se guardan solo en un volumen efímero del Job
-y desaparecen al eliminar el pod. Los Jobs terminados tienen TTL de diez minutos.
-
-Cuando ambas imágenes estén publicadas y RDS disponible:
-
-```bash
-python3 deployment/deploy-apps.py --origin http://localhost
-kubectl --context cloud-integrador-lab -n cloud-integrador rollout status deployment/backend --timeout=600s
-kubectl --context cloud-integrador-lab -n cloud-integrador rollout status deployment/frontend --timeout=300s
-kubectl --context cloud-integrador-lab -n cloud-integrador get ingress
-```
-
-El origen localhost es solo de bootstrap, hasta conocer el hostname del ALB. Después:
-
-```bash
-ALB_HOST="$(kubectl --context cloud-integrador-lab -n cloud-integrador get ingress cloud-integrador -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
-python3 deployment/deploy-apps.py --origin "http://$ALB_HOST"
-kubectl --context cloud-integrador-lab -n cloud-integrador rollout status deployment/backend --timeout=600s
-curl --fail "http://$ALB_HOST/api/scholarships/get_all"
-```
-
-Se usan imágenes por digest, no `latest`. La URL sirve frontend y API en el mismo origen:
-Vite se construye con `VITE_API_URL=/api`. Las comprobaciones backend usan la ruta real
-`/api/scholarships/get_all`; liveness TCP no sustituye un endpoint Actuator.
-
-Prueba funcional externa (crea un usuario sintético, no imprime contraseñas ni tokens):
-
-```bash
-python3 deployment/smoke-test.py "http://$ALB_HOST"
-```
-
-## Secretos
-
-`prepare-database.py` genera `.deployment/secrets.json` con permisos 600, sin mostrar
-contraseñas. Genera también `stacks/database/deployment.auto.tfvars.json` privado,
-con inputs de red, contraseña RDS y snapshot final. No sobrescribe secretos existentes.
-Estos archivos están ignorados por Git. El estado RDS también contiene la contraseña.
-Conservarlos seguros: no pegarlos en el chat ni subirlos al repositorio.
-
-## Límites de esta demostración
-
-- HTTP restringido a la IP del laboratorio: **solo usuarios y datos sintéticos**.
-  Añadir HTTPS/ACM antes de datos reales.
-- Sin GitHub Actions aún: los builds son remotos, pero se lanzan manualmente.
-- HPA escala pods, no nodos. El node group no tiene Cluster Autoscaler.
-- RDS Single-AZ; no es alta disponibilidad.
-- Logs de aplicaciones mediante kubectl; CloudWatch de control plane y PostgreSQL.
-  Container Insights no está activado por defecto.
-- EKS, dos EC2, RDS, ALB, IPv4, discos, imágenes y logs consumen créditos aunque
-  no abras la aplicación. No dejarlo encendido sin necesidad.
+Cerrar AWS o apagar el equipo no garantiza detener costos. Conservar los estados
+y seguir el orden de limpieza al terminar.
 
 ## Limpieza (orden obligatorio)
 
-1. Eliminar el Ingress **manteniendo operativo el controlador ALB** y confirmar que AWS
-   borró el balanceador y target groups:
+1. Eliminar el Ingress con el controlador ALB todavía operativo:
 
    ```bash
-   kubectl --context cloud-integrador-lab -n cloud-integrador delete ingress cloud-integrador --wait=true --timeout=600s
+   kubectl --context cloud-integrador-lab -n cloud-integrador \
+     delete ingress cloud-integrador --wait=true --timeout=600s
    ```
 
-2. Eliminar los namespaces `cloud-integrador` y `cloud-build` cuando ya no se necesiten.
-3. En los inputs de database, desactivar `deletion_protection` y aplicar ese cambio.
-   Confirmar si conservar el snapshot final (seguirá cobrando) o aprobar omitirlo.
-4. Ejecutar `terraform destroy` en database, siempre con el archivo común.
-5. Ejecutar `terraform destroy` en network con el archivo común.
-6. Si se aprueba eliminar imágenes, aplicar `force_delete=true` en frontend/backend
-   y destruir esos stacks. No borrar los archivos de estado antes de destruir.
-7. Revisar snapshots, logs, ALB/ENI y recursos retenidos en AWS. No quitar finalizers
-   manualmente ni eliminar roles preexistentes del Lab.
+2. Confirmar en AWS que se eliminaron el ALB y sus target groups; después eliminar
+   los namespaces `cloud-integrador` y `cloud-build`.
+3. Desactivar `deletion_protection` en los inputs de database y aplicar el cambio.
+   Decidir si conservar el snapshot final (genera costos) o autorizar omitirlo.
+4. Destruir primero database y después network, revisando cada plan:
+
+   ```bash
+   terraform -chdir=stacks/database destroy -var-file=../../config/common.tfvars
+   terraform -chdir=stacks/network destroy -var-file=../../config/common.tfvars
+   ```
+
+5. Si se autoriza eliminar las imágenes ECR, configurar `force_delete=true` en los
+   inputs de frontend/backend, aplicar el cambio y destruir ambos stacks con
+   `-var-file=../../config/common.tfvars`.
+6. Revisar snapshots, logs, ALB, ENI y otros recursos retenidos en AWS. No borrar
+   estados antes de destruir, quitar finalizers manualmente ni eliminar roles del Lab.

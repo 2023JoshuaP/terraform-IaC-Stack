@@ -71,7 +71,7 @@ terraform -chdir=stacks/backend apply -var-file=../../config/common.tfvars
 ```
 
 Los comandos de construcción y ejecución están en la
-[guía de despliegue](deployment/README.md).
+[guía de despliegue](deployment/SETUP%20DEPLOY.md).
 No aplicar desde un estado vacío si los recursos ya existen: recuperar o migrar
 el estado correspondiente primero.
 
@@ -119,11 +119,11 @@ activo. Después borrar workloads, desactivar/aplicar la protección de RDS y
 destruir `database` antes de `network`. Destruir los ECR solo tras aprobar el
 borrado de imágenes. Los snapshots retenidos siguen generando costos.
 
-Procedimiento: [limpieza del despliegue](deployment/README.md#limpieza-orden-obligatorio).
+Procedimiento: [limpieza del despliegue](deployment/SETUP%20DEPLOY.md#limpieza-orden-obligatorio).
 
 ## Documentación
 
-- [Construcción y despliegue](deployment/README.md)
+- [Construcción y despliegue](deployment/SETUP%20DEPLOY.md)
 - [Validación y evidencias](validation/README.md)
 
 ## Aplicaciones
