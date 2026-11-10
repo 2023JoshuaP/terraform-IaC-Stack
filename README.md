@@ -2,7 +2,8 @@
 
 Infraestructura y despliegue en AWS de **ProceedHub** (Spring Boot), **HamukHub**
 (React/Vite) y PostgreSQL. Terraform administra cuatro stacks independientes;
-las imágenes se construyen en EKS y se almacenan en ECR.
+las imágenes se construyen en EKS y se almacenan en ECR. Incluye un script para
+automatizar el despliegue en AWS Academy y una guía para ejecutarlo por etapas.
 
 ## Arquitectura
 
@@ -28,13 +29,14 @@ Ingress; el controlador Kubernetes aprovisiona el ALB.
 ```text
 config/         Valores comunes de Terraform (plantilla)
 stacks/         network, backend, frontend y database
-deployment/     Preparación de RDS, instalación, builds y despliegue
+deployment/     Guía, automatización, preparación, builds y despliegue
 validation/     Pruebas, recuperación, carga e informes
 ```
 
 ## Requisitos
 
-- Terraform >= 1.16, AWS CLI v2, kubectl, Helm, Python >= 3.12 y Git.
+- Terraform >= 1.16 y < 2, AWS CLI v2, kubectl compatible con Kubernetes 1.35,
+  Helm 3, Python >= 3.12 y Git en Linux/Bash o WSL.
 - Credenciales AWS vigentes y permisos para EKS, EC2, ECR, RDS y ELB.
 - IP pública autorizada para la API EKS y la aplicación.
 - En AWS Academy: roles existentes de clúster y nodos autorizados por el Lab.
@@ -44,36 +46,42 @@ aplicaciones corren en AWS.
 
 ## Despliegue
 
-Ejecutar desde la raíz del repositorio. Para un entorno nuevo:
-
-1. Copiar `config/common.tfvars.example` a `config/common.tfvars` y las plantillas
-   `terraform.tfvars.example` a `terraform.tfvars` de cada stack.
-2. Configurar región, IPs y roles. En Academy usar `create_iam_roles=false` y los
-   ARN de roles autorizados.
-3. Inicializar, validar, revisar y aplicar `backend`, `frontend` y `network`.
-4. Configurar kubectl, ejecutar `deployment/prepare-database.py` y aplicar
-   `database` con los inputs generados.
-5. Instalar componentes con `deployment/install-platform.sh`.
-6. Construir backend y frontend con `deployment/cloud-build.py`, secuencialmente,
-   comprobando que cada Job termine correctamente.
-7. Desplegar con `deployment/deploy-apps.py`, obtener el hostname ALB y actualizar
-   el origen de la aplicación.
-8. Comprobar disponibilidad con `deployment/smoke-test.py`.
-
-Ejemplo del ciclo Terraform para un stack:
+Activar el Lab, configurar credenciales vigentes y usar un clon limpio para cada
+cuenta. Ejecutar desde la raíz del repositorio:
 
 ```bash
 aws sts get-caller-identity
-terraform -chdir=stacks/backend init
-terraform -chdir=stacks/backend validate
-terraform -chdir=stacks/backend plan -var-file=../../config/common.tfvars
-terraform -chdir=stacks/backend apply -var-file=../../config/common.tfvars
+python3 deployment/prepare-environment.py --region us-east-1
 ```
 
-Los comandos de construcción y ejecución están en la
-[guía de despliegue](deployment/SETUP%20DEPLOY.md).
-No aplicar desde un estado vacío si los recursos ya existen: recuperar o migrar
-el estado correspondiente primero.
+Elegir roles de la cuenta que pasaron el diagnóstico y sustituir los nombres:
+
+```bash
+python3 deployment/deploy-all.py \
+  --region us-east-1 \
+  --cluster-role NOMBRE_REAL_ROL_CLUSTER \
+  --node-role NOMBRE_REAL_ROL_NODOS
+```
+
+El script prepara los inputs, aplica los cuatro stacks, conecta Kubernetes,
+instala ALB Controller y Metrics Server, construye ambas imágenes secuencialmente,
+despliega las aplicaciones y ejecuta el smoke test. Al terminar muestra el enlace.
+
+- Espera la creación de EKS/RDS, nodos `Ready`, rollouts, builds y HTTP del ALB.
+- Solicita confirmación inicial y por cada plan; `--yes` permite aplicar sin preguntas.
+- Rechaza planes con eliminaciones o reemplazos y se detiene ante errores, sin
+  destruir automáticamente lo creado.
+- `--ready-timeout 1800` amplía la espera de nodos/HTTP; Terraform mantiene sus
+  propios límites de creación.
+- No instala herramientas, configura credenciales ni modifica políticas IAM.
+
+La simulación IAM es parcial: no garantiza todas las acciones, SCP ni cuotas.
+Ante ambigüedad o permisos insuficientes, revisar el diagnóstico antes de continuar.
+
+Para el procedimiento manual y la recuperación de intentos fallidos, consultar
+[SETUP DEPLOY](deployment/SETUP%20DEPLOY.md). No ejecutar el flujo manual y el
+automático en paralelo. No copiar estados, secretos ni inputs de otra cuenta, ni
+aplicar desde un estado vacío sobre recursos existentes.
 
 ## Validación
 
@@ -103,12 +111,18 @@ tienen efectos reales sobre los workloads.
 
 - No versionar credenciales, secretos, estados, planes ni valores locales.
   Las plantillas y `.terraform.lock.hcl` sí se versionan.
+- `.deployment/` contiene secretos y metadatos privados; el orquestador guarda
+  planes sensibles y el resultado en `.deployment/deploy-all-*/`. No publicarlos,
+  ni las carpetas locales de documentación o evidencias.
 - Los estados son locales y contienen datos sensibles. Para operar desde varios
   equipos, migrar a un backend remoto cifrado con bloqueo y una clave por stack.
 - El piloto usa HTTP restringido por IP, roles amplios del Lab y builds
-  privilegiados. No usar datos reales ni tomarlo como configuración de producción.
+  privilegiados. El builder y el controlador ALB usan credenciales del nodo mediante
+  IMDS y `hostNetwork`. Solo para laboratorio con código confiable y datos ficticios;
+  no es una configuración de producción.
 - RDS es Single-AZ. El HPA escala pods; no hay autoscaler de nodos instalado.
-- Los builds son remotos y se lanzan manualmente; GitHub Actions sigue pendiente.
+- Los builds son remotos, lanzados por el orquestador o por comandos individuales;
+  no hay pipeline de GitHub Actions.
 - EKS, EC2, RDS, ALB, almacenamiento y recursos retenidos generan costos aunque no
   se abra la aplicación.
 
